@@ -7,6 +7,9 @@ https://github.com/zhongyang219/TrafficMonitor
 https://github.com/zhongyang219/TrafficMonitor.wiki
 ```
 
+The source checkout used was `188b8773b959733bfc0e4f506c762d9a255883d4` and the
+wiki checkout was `cf35274094fe2ffb040ca1f29d6ce73c713d93a2`.
+
 The relevant upstream files are `include/PluginInterface.h`, `PluginDemo/PluginDemo.cpp`,
 `PluginDemo/CustomDrawItem.cpp`, and the wiki pages `插件开发指南.md` and `插件功能.md`.
 The guide requires a Windows dynamic library, a single exported `TMPluginGetInstance`
