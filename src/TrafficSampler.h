@@ -33,8 +33,6 @@ private:
 
     using CounterMap = std::unordered_map<std::wstring, Previous>;
 
-    static std::uint64_t Rate(std::uint64_t bytes, std::chrono::milliseconds elapsed);
-    static std::uint64_t PositiveDelta(std::uint64_t current, std::uint64_t previous);
     ByteDelta SampleV4(CounterMap& current_connections);
     ByteDelta SampleV6(CounterMap& current_connections);
 

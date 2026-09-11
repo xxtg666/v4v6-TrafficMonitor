@@ -274,9 +274,6 @@ TrafficSampler::ByteDelta TrafficSampler::SampleV6(CounterMap& current_connectio
     return {in_delta, out_delta};
 }
 
-std::uint64_t TrafficSampler::Rate(std::uint64_t bytes, std::chrono::milliseconds elapsed) { return PerSecond(bytes, elapsed); }
-std::uint64_t TrafficSampler::PositiveDelta(std::uint64_t current, std::uint64_t previous) { return Delta(current, previous); }
-
 extern "C" __declspec(dllexport) ITMPlugin* TMPluginGetInstance()
 {
     return &g_plugin;
