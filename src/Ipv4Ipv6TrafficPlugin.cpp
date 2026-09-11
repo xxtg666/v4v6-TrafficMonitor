@@ -1,6 +1,11 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 
+#include <winsock2.h>
 #include <windows.h>
 #include <iphlpapi.h>
 #include <mstcpip.h>
@@ -85,19 +90,33 @@ std::vector<std::byte> GetTable(ULONG family)
 
 bool ReadV4(const MIB_TCPROW& row, EstatsData& data)
 {
+    using SetFn = ULONG(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+    using GetFn = ULONG(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+    const auto module = GetModuleHandleW(L"iphlpapi.dll");
+    const auto set_stats = module ? reinterpret_cast<SetFn>(GetProcAddress(module, "SetPerTcpConnectionEStats")) : nullptr;
+    const auto get_stats = module ? reinterpret_cast<GetFn>(GetProcAddress(module, "GetPerTcpConnectionEStats")) : nullptr;
+    if (!set_stats || !get_stats)
+        return false;
     TCP_ESTATS_DATA_RW_v0 enable{TcpBoolOptEnabled};
-    SetPerTcpConnectionEStats(const_cast<PMIB_TCPROW>(&row), TcpConnectionEstatsData,
+    set_stats(const_cast<PMIB_TCPROW>(&row), TcpConnectionEstatsData,
         reinterpret_cast<PUCHAR>(&enable), 0, sizeof(enable), 0);
-    return GetPerTcpConnectionEStats(const_cast<PMIB_TCPROW>(&row), TcpConnectionEstatsData,
+    return get_stats(const_cast<PMIB_TCPROW>(&row), TcpConnectionEstatsData,
         nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&data), 0, sizeof(data)) == NO_ERROR;
 }
 
 bool ReadV6(const MIB_TCP6ROW& row, EstatsData& data)
 {
+    using SetFn = ULONG(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+    using GetFn = ULONG(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+    const auto module = GetModuleHandleW(L"iphlpapi.dll");
+    const auto set_stats = module ? reinterpret_cast<SetFn>(GetProcAddress(module, "SetPerTcp6ConnectionEStats")) : nullptr;
+    const auto get_stats = module ? reinterpret_cast<GetFn>(GetProcAddress(module, "GetPerTcp6ConnectionEStats")) : nullptr;
+    if (!set_stats || !get_stats)
+        return false;
     TCP_ESTATS_DATA_RW_v0 enable{TcpBoolOptEnabled};
-    SetPerTcp6ConnectionEStats(const_cast<PMIB_TCP6ROW>(&row), TcpConnectionEstatsData,
+    set_stats(const_cast<PMIB_TCP6ROW>(&row), TcpConnectionEstatsData,
         reinterpret_cast<PUCHAR>(&enable), 0, sizeof(enable), 0);
-    return GetPerTcp6ConnectionEStats(const_cast<PMIB_TCP6ROW>(&row), TcpConnectionEstatsData,
+    return get_stats(const_cast<PMIB_TCP6ROW>(&row), TcpConnectionEstatsData,
         nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&data), 0, sizeof(data)) == NO_ERROR;
 }
 

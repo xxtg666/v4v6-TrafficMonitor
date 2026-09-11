@@ -22,7 +22,8 @@ for token in ("class ITMPlugin", "class IPluginItem", "GetAPIVersion", "DrawItem
     assert token in interface, f"interface header is incomplete: {token}"
 
 assert "add_library(TrafficMonitorIpv4Ipv6 SHARED" in cmake
-assert "iphlpapi" in cmake and "ws2_32" in cmake
+assert all(name in cmake for name in ("iphlpapi", "ws2_32", "user32", "gdi32"))
+assert (ROOT / "cmake" / "toolchains" / "x86_64-w64-mingw32.cmake").exists()
 assert "GetItem(int index) override" in source
 assert "return index == 0 ? &m_item : nullptr;" in source
 
