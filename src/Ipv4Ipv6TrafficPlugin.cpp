@@ -13,7 +13,6 @@
 #include <ws2tcpip.h>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -75,7 +74,6 @@ std::wstring V6Key(const MIB_TCP6ROW& row, DWORD pid)
         std::to_wstring(ntohs(static_cast<u_short>(row.dwRemotePort))) + L"#" + std::to_wstring(pid);
 }
 
-template <typename Table>
 std::vector<std::byte> GetTable(ULONG family)
 {
     ULONG size = 0;
@@ -238,7 +236,7 @@ void TrafficSampler::Sample()
 TrafficSampler::ByteDelta TrafficSampler::SampleV4(CounterMap& current_connections)
 {
     std::uint64_t in_delta = 0, out_delta = 0;
-    const auto bytes = GetTable<MIB_TCPTABLE_OWNER_PID>(AF_INET);
+    const auto bytes = GetTable(AF_INET);
     if (bytes.empty()) return {};
     const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(bytes.data());
     for (DWORD i = 0; i < table->dwNumEntries; ++i)
@@ -264,7 +262,7 @@ TrafficSampler::ByteDelta TrafficSampler::SampleV4(CounterMap& current_connectio
 TrafficSampler::ByteDelta TrafficSampler::SampleV6(CounterMap& current_connections)
 {
     std::uint64_t in_delta = 0, out_delta = 0;
-    const auto bytes = GetTable<MIB_TCP6TABLE_OWNER_PID>(AF_INET6);
+    const auto bytes = GetTable(AF_INET6);
     if (bytes.empty()) return {};
     const auto* table = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(bytes.data());
     for (DWORD i = 0; i < table->dwNumEntries; ++i)
