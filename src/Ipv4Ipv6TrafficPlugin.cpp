@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -39,7 +40,11 @@ std::uint64_t Delta(std::uint64_t current, std::uint64_t previous)
 std::uint64_t PerSecond(std::uint64_t bytes, std::chrono::milliseconds elapsed)
 {
     const auto millis = std::max<std::int64_t>(1, elapsed.count());
-    return static_cast<std::uint64_t>((bytes * 1000ULL) / static_cast<std::uint64_t>(millis));
+    // Avoid overflowing before division when a long interval accumulates a large
+    // counter (the usual one-second sample remains on the fast path).
+    if (bytes <= std::numeric_limits<std::uint64_t>::max() / 1000ULL)
+        return (bytes * 1000ULL) / static_cast<std::uint64_t>(millis);
+    return static_cast<std::uint64_t>((static_cast<long double>(bytes) * 1000.0L) / millis);
 }
 
 std::wstring V4Address(DWORD address)
@@ -95,6 +100,8 @@ bool ReadV4(const MIB_TCPROW& row, EstatsData& data)
     const auto get_stats = module ? reinterpret_cast<GetFn>(GetProcAddress(module, "GetPerTcpConnectionEStats")) : nullptr;
     if (!set_stats || !get_stats)
         return false;
+    // Extended statistics are disabled by default on many Windows versions.
+    // Enabling collection is harmless for an already-enabled connection.
     TCP_ESTATS_DATA_RW_v0 enable{TcpBoolOptEnabled};
     set_stats(const_cast<PMIB_TCPROW>(&row), TcpConnectionEstatsData,
         reinterpret_cast<PUCHAR>(&enable), 0, sizeof(enable), 0);
@@ -148,7 +155,7 @@ public:
     const wchar_t* GetItemValueText() const override { return m_value.c_str(); }
     const wchar_t* GetItemValueSampleText() const override { return L"IPv4  ↓ 999.9 MB/s ↑ 999.9 MB/s"; }
     bool IsCustomDraw() const override { return true; }
-    int GetItemWidth() const override { return 220; }
+    int GetItemWidth() const override { return 300; }
     int IsDoubleLineExclusive() const override { return 1; }
 
     void DrawItem(void* hdc, int x, int y, int width, int height, bool dark_mode) override
@@ -190,6 +197,10 @@ public:
     {
         m_sampler.Sample();
         m_item.RefreshText();
+        const auto& v4 = m_sampler.IPv4();
+        const auto& v6 = m_sampler.IPv6();
+        m_tooltip = L"IPv4 TCP  ↓ " + FormatRate(v4.in_bytes_per_second) + L"  ↑ " + FormatRate(v4.out_bytes_per_second) +
+            L"\nIPv6 TCP  ↓ " + FormatRate(v6.in_bytes_per_second) + L"  ↑ " + FormatRate(v6.out_bytes_per_second);
     }
     const wchar_t* GetInfo(PluginInfoIndex index) override
     {
@@ -204,11 +215,12 @@ public:
         default: return L"";
         }
     }
-    const wchar_t* GetTooltipInfo() override { return L"IPv4/IPv6 TCP throughput (bytes per second)"; }
+    const wchar_t* GetTooltipInfo() override { return m_tooltip.c_str(); }
 
 private:
     TrafficSampler m_sampler;
     TrafficItem m_item;
+    std::wstring m_tooltip{L"IPv4/IPv6 TCP throughput (bytes per second)"};
 };
 
 TrafficPlugin g_plugin;
