@@ -23,7 +23,7 @@ cmake --build build --config Release
 ```bash
 x86_64-w64-mingw32-g++ -std=c++17 -shared -Iinclude -Isrc \
   src/Ipv4Ipv6TrafficPlugin.cpp -o TrafficMonitorIpv4Ipv6.dll \
-  -liphlpapi -lws2_32 -luser32 -lgdi32
+  -liphlpapi -lws2_32 -luser32 -lgdi32 -static-libgcc -static-libstdc++
 ```
 
 也可以使用仓库内的交叉编译工具链文件：

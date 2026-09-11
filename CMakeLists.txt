@@ -12,4 +12,8 @@ target_compile_features(TrafficMonitorIpv4Ipv6 PRIVATE cxx_std_17)
 target_include_directories(TrafficMonitorIpv4Ipv6 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(TrafficMonitorIpv4Ipv6 PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(TrafficMonitorIpv4Ipv6 PRIVATE iphlpapi ws2_32 user32 gdi32)
+if(MINGW)
+  # Keep the plugin self-contained when it is built in the Codespace.
+  target_link_options(TrafficMonitorIpv4Ipv6 PRIVATE -static-libgcc -static-libstdc++)
+endif()
 set_target_properties(TrafficMonitorIpv4Ipv6 PROPERTIES PREFIX "" OUTPUT_NAME "TrafficMonitorIpv4Ipv6")
