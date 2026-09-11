@@ -18,6 +18,11 @@ required_source_tokens = (
 for token in required_source_tokens:
     assert token in source, f"missing implementation token: {token}"
 
+assert "today_bytes" in source
+assert "SetConfigDir" in source and "LoadTotals" in source and "SaveTotals" in source
+assert "↓" not in source and "↑" not in source
+assert "B/s" not in source
+
 for token in ("class ITMPlugin", "class IPluginItem", "GetAPIVersion", "DrawItem"):
     assert token in interface, f"interface header is incomplete: {token}"
 

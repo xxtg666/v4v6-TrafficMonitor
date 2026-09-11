@@ -1,13 +1,13 @@
 # TrafficMonitor IPv4/IPv6 流量插件
 
-这是一个遵循 [TrafficMonitor 插件开发指南](https://github.com/zhongyang219/TrafficMonitor/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%E6%8C%87%E5%8D%97) 的 Windows 动态库插件。它在任务栏中提供一个自绘项目，将 IPv4 和 IPv6 的 TCP 进出速率分成两行显示：
+这是一个遵循 [TrafficMonitor 插件开发指南](https://github.com/zhongyang219/TrafficMonitor/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%E6%8C%87%E5%8D%97) 的 Windows 动态库插件。它在任务栏中提供一个自绘项目，将当天 IPv4 和 IPv6 的 TCP 累计总流量分成两行显示：
 
 ```
-IPv4 ↓ 1.2 MB/s ↑ 64 KB/s
-IPv6 ↓ 18 KB/s  ↑ 2 KB/s
+4 1.2G
+6 18M
 ```
 
-插件使用 Windows IP Helper 的 TCP extended statistics (`GetPerTcpConnectionEStats` / `GetPerTcp6ConnectionEStats`) 按地址族汇总活动 TCP 连接的字节增量。这样 IPv4 与 IPv6 不会混在同一列；没有活动连接时显示 `0 B/s`。UDP 和无法提供 extended statistics 的连接不会被猜测或错误归入另一种协议。
+插件使用 Windows IP Helper 的 TCP extended statistics (`GetPerTcpConnectionEStats` / `GetPerTcp6ConnectionEStats`) 按地址族汇总活动 TCP 连接的字节增量。任务栏只显示每个地址族的当天累计合计，不再拆分上传和下载；日期变化时自动清零，并在 TrafficMonitor 配置目录保存当天的累计值。没有活动连接时显示 `0B`。UDP 和无法提供 extended statistics 的连接不会被猜测或错误归入另一种协议。
 
 ## 构建
 
@@ -36,7 +36,7 @@ cmake --build build-mingw
 
 生成的 `TrafficMonitorIpv4Ipv6.dll` 放到 TrafficMonitor 安装目录的 `plugins` 文件夹，重启程序后在任务栏窗口右键菜单的“显示设置”中勾选 **IPv4/IPv6 流量**。
 
-插件按 TrafficMonitor 的 ABI 导出 `TMPluginGetInstance`，项目 ID 为 `IPv6Traffic`，接口版本为 8，并通过 `IsCustomDraw` 和 `IsDoubleLineExclusive` 绘制两行紧凑信息。
+插件按 TrafficMonitor 的 ABI 导出 `TMPluginGetInstance`，项目 ID 为 `IPv6Traffic`，接口版本为 8，并通过 `IsCustomDraw` 和 `IsDoubleLineExclusive` 绘制两行紧凑信息。显示格式为 `4 1.2G` 和 `6 18M`，固定宽度为 105px（96 DPI）。
 
 ## 数据范围
 

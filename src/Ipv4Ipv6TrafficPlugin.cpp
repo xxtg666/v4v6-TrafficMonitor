@@ -13,7 +13,6 @@
 #include <ws2tcpip.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -29,7 +28,6 @@
 
 namespace
 {
-using Clock = std::chrono::steady_clock;
 using EstatsData = TCP_ESTATS_DATA_ROD_v0;
 
 std::uint64_t Delta(std::uint64_t current, std::uint64_t previous)
@@ -37,14 +35,20 @@ std::uint64_t Delta(std::uint64_t current, std::uint64_t previous)
     return current >= previous ? current - previous : current;
 }
 
-std::uint64_t PerSecond(std::uint64_t bytes, std::chrono::milliseconds elapsed)
+std::uint64_t SaturatingAdd(std::uint64_t left, std::uint64_t right)
 {
-    const auto millis = std::max<std::int64_t>(1, elapsed.count());
-    // Avoid overflowing before division when a long interval accumulates a large
-    // counter (the usual one-second sample remains on the fast path).
-    if (bytes <= std::numeric_limits<std::uint64_t>::max() / 1000ULL)
-        return (bytes * 1000ULL) / static_cast<std::uint64_t>(millis);
-    return static_cast<std::uint64_t>((static_cast<long double>(bytes) * 1000.0L) / millis);
+    return right > std::numeric_limits<std::uint64_t>::max() - left
+        ? std::numeric_limits<std::uint64_t>::max()
+        : left + right;
+}
+
+std::wstring CurrentDay()
+{
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t day[16]{};
+    swprintf_s(day, L"%04u-%02u-%02u", now.wYear, now.wMonth, now.wDay);
+    return day;
 }
 
 std::wstring V4Address(DWORD address)
@@ -125,9 +129,10 @@ bool ReadV6(const MIB_TCP6ROW& row, EstatsData& data)
         nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&data), 0, sizeof(data)) == NO_ERROR;
 }
 
-std::wstring FormatRate(std::uint64_t bytes)
+std::wstring FormatBytes(std::uint64_t bytes)
 {
-    static constexpr const wchar_t* units[] = {L"B/s", L"KB/s", L"MB/s", L"GB/s"};
+    // A one-letter unit keeps the daily totals narrow enough for a taskbar column.
+    static constexpr const wchar_t* units[] = {L"B", L"K", L"M", L"G", L"T"};
     double value = static_cast<double>(bytes);
     std::size_t unit = 0;
     while (value >= 1024.0 && unit + 1 < std::size(units))
@@ -137,9 +142,9 @@ std::wstring FormatRate(std::uint64_t bytes)
     }
     std::wostringstream output;
     if (unit == 0)
-        output << static_cast<std::uint64_t>(value) << L' ';
+        output << static_cast<std::uint64_t>(value);
     else
-        output << std::fixed << std::setprecision(value < 10.0 ? 1 : 0) << value << L' ';
+        output << std::fixed << std::setprecision(value < 10.0 ? 1 : 0) << value;
     output << units[unit];
     return output.str();
 }
@@ -149,13 +154,13 @@ class TrafficItem final : public IPluginItem
 public:
     explicit TrafficItem(TrafficSampler& sampler) : m_sampler(sampler) {}
 
-    const wchar_t* GetItemName() const override { return L"IPv4/IPv6 traffic"; }
+    const wchar_t* GetItemName() const override { return L"IPv4/IPv6 daily traffic"; }
     const wchar_t* GetItemId() const override { return L"IPv6Traffic"; }
     const wchar_t* GetItemLableText() const override { return L""; }
     const wchar_t* GetItemValueText() const override { return m_value.c_str(); }
-    const wchar_t* GetItemValueSampleText() const override { return L"IPv4  ↓ 999.9 MB/s ↑ 999.9 MB/s"; }
+    const wchar_t* GetItemValueSampleText() const override { return L"4 999.9G"; }
     bool IsCustomDraw() const override { return true; }
-    int GetItemWidth() const override { return 300; }
+    int GetItemWidth() const override { return 105; }
     int IsDoubleLineExclusive() const override { return 1; }
 
     void DrawItem(void* hdc, int x, int y, int width, int height, bool dark_mode) override
@@ -169,8 +174,8 @@ public:
         RECT second{rect.left, rect.top + row_height, rect.right, rect.bottom};
         const auto& v4 = m_sampler.IPv4();
         const auto& v6 = m_sampler.IPv6();
-        const std::wstring v4_text = L"IPv4  ↓ " + FormatRate(v4.in_bytes_per_second) + L"  ↑ " + FormatRate(v4.out_bytes_per_second);
-        const std::wstring v6_text = L"IPv6  ↓ " + FormatRate(v6.in_bytes_per_second) + L"  ↑ " + FormatRate(v6.out_bytes_per_second);
+        const std::wstring v4_text = L"4 " + FormatBytes(v4.today_bytes);
+        const std::wstring v6_text = L"6 " + FormatBytes(v6.today_bytes);
         DrawTextW(dc, v4_text.c_str(), -1, &first, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         DrawTextW(dc, v6_text.c_str(), -1, &second, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
@@ -179,7 +184,7 @@ public:
     {
         const auto& v4 = m_sampler.IPv4();
         const auto& v6 = m_sampler.IPv6();
-        m_value = L"IPv4 " + FormatRate(v4.in_bytes_per_second) + L" / IPv6 " + FormatRate(v6.in_bytes_per_second);
+        m_value = L"4 " + FormatBytes(v4.today_bytes) + L" / 6 " + FormatBytes(v6.today_bytes);
     }
 
 private:
@@ -199,15 +204,14 @@ public:
         m_item.RefreshText();
         const auto& v4 = m_sampler.IPv4();
         const auto& v6 = m_sampler.IPv6();
-        m_tooltip = L"IPv4 TCP  ↓ " + FormatRate(v4.in_bytes_per_second) + L"  ↑ " + FormatRate(v4.out_bytes_per_second) +
-            L"\nIPv6 TCP  ↓ " + FormatRate(v6.in_bytes_per_second) + L"  ↑ " + FormatRate(v6.out_bytes_per_second);
+        m_tooltip = L"4 " + FormatBytes(v4.today_bytes) + L" | 6 " + FormatBytes(v6.today_bytes) + L" (today, TCP total)";
     }
     const wchar_t* GetInfo(PluginInfoIndex index) override
     {
         switch (index)
         {
         case TMI_NAME: return L"IPv4/IPv6 Traffic";
-        case TMI_DESCRIPTION: return L"Separates IPv4 and IPv6 TCP traffic in the taskbar.";
+        case TMI_DESCRIPTION: return L"Shows today's IPv4 and IPv6 TCP totals in the taskbar.";
         case TMI_AUTHOR: return L"TrafficMonitor IPv4/IPv6 contributors";
         case TMI_COPYRIGHT: return L"Copyright (C) 2026";
         case TMI_VERSION: return L"1.0.0";
@@ -216,11 +220,16 @@ public:
         }
     }
     const wchar_t* GetTooltipInfo() override { return m_tooltip.c_str(); }
+    void OnExtenedInfo(ExtendedInfoIndex index, const wchar_t* data) override
+    {
+        if (index == EI_CONFIG_DIR && data != nullptr)
+            m_sampler.SetConfigDir(data);
+    }
 
 private:
     TrafficSampler m_sampler;
     TrafficItem m_item;
-    std::wstring m_tooltip{L"IPv4/IPv6 TCP throughput (bytes per second)"};
+    std::wstring m_tooltip{L"4 / 6 today's TCP totals"};
 };
 
 TrafficPlugin g_plugin;
@@ -228,21 +237,83 @@ TrafficPlugin g_plugin;
 
 void TrafficSampler::Sample()
 {
-    const auto now = Clock::now();
-    const auto elapsed = m_last_sample.time_since_epoch().count() == 0
-        ? std::chrono::milliseconds(1000)
-        : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_sample);
-    m_last_sample = now;
+    const auto day = CurrentDay();
+    if (m_day.empty())
+        m_day = day;
+    else if (m_day != day)
+    {
+        m_day = day;
+        m_ipv4 = {};
+        m_ipv6 = {};
+        m_v4_previous.clear();
+        m_v6_previous.clear();
+    }
 
     CounterMap current_v4, current_v6;
     const auto v4_bytes = SampleV4(current_v4);
     const auto v6_bytes = SampleV6(current_v6);
-    m_ipv4.in_bytes_per_second = PerSecond(v4_bytes.in, elapsed);
-    m_ipv4.out_bytes_per_second = PerSecond(v4_bytes.out, elapsed);
-    m_ipv6.in_bytes_per_second = PerSecond(v6_bytes.in, elapsed);
-    m_ipv6.out_bytes_per_second = PerSecond(v6_bytes.out, elapsed);
+    m_ipv4.today_bytes = SaturatingAdd(m_ipv4.today_bytes, SaturatingAdd(v4_bytes.in, v4_bytes.out));
+    m_ipv6.today_bytes = SaturatingAdd(m_ipv6.today_bytes, SaturatingAdd(v6_bytes.in, v6_bytes.out));
     m_v4_previous.swap(current_v4);
     m_v6_previous.swap(current_v6);
+    SaveTotals();
+}
+
+void TrafficSampler::SetConfigDir(const wchar_t* config_dir)
+{
+    if (config_dir == nullptr || *config_dir == L'\0' || m_config_dir == config_dir)
+        return;
+    m_config_dir = config_dir;
+    LoadTotals();
+}
+
+void TrafficSampler::LoadTotals()
+{
+    if (m_config_dir.empty())
+        return;
+    const auto path = m_config_dir + L"\\TrafficMonitorIpv4Ipv6.dat";
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_HIDDEN, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+    struct PersistedTotals
+    {
+        wchar_t day[16]{};
+        std::uint64_t ipv4{};
+        std::uint64_t ipv6{};
+    } totals{};
+    DWORD read = 0;
+    const bool ok = ReadFile(file, &totals, sizeof(totals), &read, nullptr) != FALSE && read == sizeof(totals);
+    CloseHandle(file);
+    if (ok && totals.day[0] != L'\0' && std::wstring(totals.day) == CurrentDay())
+    {
+        m_day = totals.day;
+        m_ipv4.today_bytes = totals.ipv4;
+        m_ipv6.today_bytes = totals.ipv6;
+    }
+}
+
+void TrafficSampler::SaveTotals() const
+{
+    if (m_config_dir.empty() || m_day.empty())
+        return;
+    const auto path = m_config_dir + L"\\TrafficMonitorIpv4Ipv6.dat";
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_HIDDEN, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+    struct PersistedTotals
+    {
+        wchar_t day[16]{};
+        std::uint64_t ipv4{};
+        std::uint64_t ipv6{};
+    } totals{};
+    wcsncpy_s(totals.day, std::size(totals.day), m_day.c_str(), _TRUNCATE);
+    totals.ipv4 = m_ipv4.today_bytes;
+    totals.ipv6 = m_ipv6.today_bytes;
+    DWORD written = 0;
+    WriteFile(file, &totals, sizeof(totals), &written, nullptr);
+    CloseHandle(file);
 }
 
 TrafficSampler::ByteDelta TrafficSampler::SampleV4(CounterMap& current_connections)
