@@ -30,6 +30,13 @@ namespace
 {
 using EstatsData = TCP_ESTATS_DATA_ROD_v0;
 
+struct PersistedTotals
+{
+    wchar_t day[16]{};
+    std::uint64_t ipv4{};
+    std::uint64_t ipv6{};
+};
+
 std::uint64_t Delta(std::uint64_t current, std::uint64_t previous)
 {
     return current >= previous ? current - previous : current;
@@ -158,14 +165,30 @@ public:
     const wchar_t* GetItemId() const override { return L"IPv6Traffic"; }
     const wchar_t* GetItemLableText() const override { return L""; }
     const wchar_t* GetItemValueText() const override { return m_value.c_str(); }
-    const wchar_t* GetItemValueSampleText() const override { return L"4 999.9G"; }
+    const wchar_t* GetItemValueSampleText() const override { return L"4 1024G / 6 1024G"; }
     bool IsCustomDraw() const override { return true; }
     int GetItemWidth() const override { return 105; }
     int IsDoubleLineExclusive() const override { return 1; }
 
+    int GetItemWidthEx(void* hdc) const override
+    {
+        SIZE size{};
+        HDC dc = static_cast<HDC>(hdc);
+        if (!dc || !GetTextExtentPoint32W(dc, GetItemValueSampleText(),
+                static_cast<int>(wcslen(GetItemValueSampleText())), &size))
+            return 0;
+        return size.cx + MulDiv(4, GetDeviceCaps(dc, LOGPIXELSX), 96);
+    }
+
     void DrawItem(void* hdc, int x, int y, int width, int height, bool dark_mode) override
     {
         HDC dc = static_cast<HDC>(hdc);
+        if (!dc || width <= 0 || height <= 0)
+            return;
+        const int saved = SaveDC(dc);
+        if (!saved)
+            return;
+        IntersectClipRect(dc, x, y, x + width, y + height);
         RECT rect{x, y, x + width, y + height};
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, dark_mode ? RGB(235, 235, 235) : RGB(35, 35, 35));
@@ -176,8 +199,45 @@ public:
         const auto& v6 = m_sampler.IPv6();
         const std::wstring v4_text = L"4 " + FormatBytes(v4.today_bytes);
         const std::wstring v6_text = L"6 " + FormatBytes(v6.today_bytes);
-        DrawTextW(dc, v4_text.c_str(), -1, &first, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        DrawTextW(dc, v6_text.c_str(), -1, &second, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        TEXTMETRICW metrics{};
+        const bool two_rows = GetTextMetricsW(dc, &metrics) && height >= 2 * metrics.tmHeight;
+        const auto line = v4_text + L" / " + v6_text;
+        // Older hosts may allocate less width than requested. Fit within that
+        // rectangle without drawing into neighbouring taskbar items.
+        SIZE extent{};
+        GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &extent);
+        if (two_rows)
+        {
+            SIZE v4_size{}, v6_size{};
+            GetTextExtentPoint32W(dc, v4_text.c_str(), static_cast<int>(v4_text.size()), &v4_size);
+            GetTextExtentPoint32W(dc, v6_text.c_str(), static_cast<int>(v6_text.size()), &v6_size);
+            extent.cx = std::max(v4_size.cx, v6_size.cx);
+        }
+        HFONT fitted = nullptr;
+        if (extent.cx > width || metrics.tmHeight > (two_rows ? height / 2 : height))
+        {
+            LOGFONTW font{};
+            if (GetObjectW(GetCurrentObject(dc, OBJ_FONT), sizeof(font), &font))
+            {
+                const double scale = std::min({1.0, double(width) / std::max<LONG>(1, extent.cx),
+                    double(two_rows ? height / 2 : height) / std::max<LONG>(1, metrics.tmHeight)});
+                font.lfHeight = -std::max(1, static_cast<int>(std::abs(font.lfHeight) * scale));
+                fitted = CreateFontIndirectW(&font);
+                if (fitted)
+                    SelectObject(dc, fitted);
+            }
+        }
+        constexpr UINT flags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+        if (two_rows)
+        {
+            DrawTextW(dc, v4_text.c_str(), -1, &first, flags);
+            DrawTextW(dc, v6_text.c_str(), -1, &second, flags);
+        }
+        else
+            DrawTextW(dc, line.c_str(), -1, &rect, flags);
+        RestoreDC(dc, saved);
+        if (fitted)
+            DeleteObject(fitted);
     }
 
     void RefreshText()
@@ -237,6 +297,9 @@ TrafficPlugin g_plugin;
 
 void TrafficSampler::Sample()
 {
+    const auto old_day = m_day;
+    const auto old_v4 = m_ipv4.today_bytes;
+    const auto old_v6 = m_ipv6.today_bytes;
     const auto day = CurrentDay();
     if (m_day.empty())
         m_day = day;
@@ -256,14 +319,22 @@ void TrafficSampler::Sample()
     m_ipv6.today_bytes = SaturatingAdd(m_ipv6.today_bytes, SaturatingAdd(v6_bytes.in, v6_bytes.out));
     m_v4_previous.swap(current_v4);
     m_v6_previous.swap(current_v6);
+    m_dirty = m_dirty || old_day != m_day || old_v4 != m_ipv4.today_bytes || old_v6 != m_ipv6.today_bytes;
     SaveTotals();
+}
+
+TrafficSampler::~TrafficSampler()
+{
+    SaveTotals(true);
 }
 
 void TrafficSampler::SetConfigDir(const wchar_t* config_dir)
 {
     if (config_dir == nullptr || *config_dir == L'\0' || m_config_dir == config_dir)
         return;
+    SaveTotals(true);
     m_config_dir = config_dir;
+    m_last_save_attempt = GetTickCount64();
     LoadTotals();
 }
 
@@ -276,44 +347,46 @@ void TrafficSampler::LoadTotals()
         FILE_ATTRIBUTE_HIDDEN, nullptr);
     if (file == INVALID_HANDLE_VALUE)
         return;
-    struct PersistedTotals
-    {
-        wchar_t day[16]{};
-        std::uint64_t ipv4{};
-        std::uint64_t ipv6{};
-    } totals{};
+    PersistedTotals totals{};
     DWORD read = 0;
     const bool ok = ReadFile(file, &totals, sizeof(totals), &read, nullptr) != FALSE && read == sizeof(totals);
     CloseHandle(file);
-    if (ok && totals.day[0] != L'\0' && std::wstring(totals.day) == CurrentDay())
+    if (ok && totals.day[10] == L'\0' && std::wstring(totals.day, 10) == CurrentDay())
     {
         m_day = totals.day;
         m_ipv4.today_bytes = totals.ipv4;
         m_ipv6.today_bytes = totals.ipv6;
+        m_dirty = false;
     }
 }
 
-void TrafficSampler::SaveTotals() const
+void TrafficSampler::SaveTotals(bool force)
 {
-    if (m_config_dir.empty() || m_day.empty())
+    if (!m_dirty || m_config_dir.empty() || m_day.empty())
         return;
+    const auto now = GetTickCount64();
+    if (!force && now - m_last_save_attempt < 60000)
+        return;
+    // Throttle failed attempts too (for example, a read-only config directory).
+    m_last_save_attempt = now;
     const auto path = m_config_dir + L"\\TrafficMonitorIpv4Ipv6.dat";
-    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+    const auto temporary = path + L".tmp";
+    HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_HIDDEN, nullptr);
     if (file == INVALID_HANDLE_VALUE)
         return;
-    struct PersistedTotals
-    {
-        wchar_t day[16]{};
-        std::uint64_t ipv4{};
-        std::uint64_t ipv6{};
-    } totals{};
+    PersistedTotals totals{};
     wcsncpy_s(totals.day, std::size(totals.day), m_day.c_str(), _TRUNCATE);
     totals.ipv4 = m_ipv4.today_bytes;
     totals.ipv6 = m_ipv6.today_bytes;
     DWORD written = 0;
-    WriteFile(file, &totals, sizeof(totals), &written, nullptr);
+    const bool ok = WriteFile(file, &totals, sizeof(totals), &written, nullptr) &&
+        written == sizeof(totals) && FlushFileBuffers(file);
     CloseHandle(file);
+    if (ok && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        m_dirty = false;
+    else
+        DeleteFileW(temporary.c_str());
 }
 
 TrafficSampler::ByteDelta TrafficSampler::SampleV4(CounterMap& current_connections)
