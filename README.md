@@ -7,7 +7,11 @@
 6 18M
 ```
 
-插件使用 Windows IP Helper 的 TCP extended statistics (`GetPerTcpConnectionEStats` / `GetPerTcp6ConnectionEStats`) 按地址族汇总活动 TCP 连接的字节增量。任务栏只显示每个地址族的当天累计合计，不再拆分上传和下载；日期变化时自动清零，并在 TrafficMonitor 配置目录保存当天的累计值。没有活动连接时显示 `0B`。UDP 和无法提供 extended statistics 的连接不会被猜测或错误归入另一种协议。
+宿主只分配一行高度时（例如同时开启总流量显示），自动改为 `4 50M / 6 50M`。是否使用两行由实际可用高度和当前字体高度决定，宽度按字体测量；较窄区域会缩小字体以避免覆盖相邻项目。
+
+插件使用 Windows IP Helper 的 TCP extended statistics (`GetPerTcpConnectionEStats` / `GetPerTcp6ConnectionEStats`) 按地址族汇总活动 TCP 连接的字节增量。任务栏只显示每个地址族的当天累计合计，不再拆分上传和下载；日期变化时自动清零，并在 TrafficMonitor 配置目录保存当天的累计值。尚未累计流量时显示 `0B`，空闲时保留累计值。UDP 和无法提供 extended statistics 的连接不会被猜测或错误归入另一种协议。
+
+采样只更新内存，累计值或日期有变化时每 60 秒保存一次；正常退出/卸载时补存。写入失败也按该间隔重试。保存先写临时文件，完整写入后替换原文件，保留原有 `.dat` 格式。异常终止或断电可能丢失最近约一分钟未保存的数据；目录不可写时无法保存。
 
 ## 构建
 
@@ -36,7 +40,13 @@ cmake --build build-mingw
 
 生成的 `TrafficMonitorIpv4Ipv6.dll` 放到 TrafficMonitor 安装目录的 `plugins` 文件夹，重启程序后在任务栏窗口右键菜单的“显示设置”中勾选 **IPv4/IPv6 流量**。
 
-插件按 TrafficMonitor 的 ABI 导出 `TMPluginGetInstance`，项目 ID 为 `IPv6Traffic`，接口版本为 8，并通过 `IsCustomDraw` 和 `IsDoubleLineExclusive` 绘制两行紧凑信息。显示格式为 `4 1.2G` 和 `6 18M`，固定宽度为 105px（96 DPI）。
+插件按 TrafficMonitor 的 ABI 导出 `TMPluginGetInstance`，项目 ID 为 `IPv6Traffic`，接口版本为 8。支持独占双行的布局仍使用两行；单行区域自动合并显示。支持字体测量的宿主根据单行示例分配宽度，旧宿主回退到 105px（96 DPI）。
+
+## 回归测试
+
+Windows 构建时传入 `-DV4V6_BUILD_TESTS=ON`，构建后运行 `ctest --test-dir build -C Release --output-on-failure`。
+Codespace 中安装 Wine 后，可直接运行交叉编译出的 `wine build/windows_regression.exe`。
+测试执行实际 GDI 绘制及配置文件读写，覆盖不同字体高度、单/双行切换、保存限频、正常退出补存、跨日清零及损坏记录。
 
 ## 数据范围
 
