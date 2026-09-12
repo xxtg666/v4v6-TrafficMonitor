@@ -1,0 +1,7 @@
+#pragma once
+#define IDD_DISPLAY 101
+#define IDC_SINGLE 1001
+#define IDC_FIRST 1002
+#define IDC_SECOND 1003
+#define IDC_DECIMALS 1004
+#define IDC_DEFAULTS 1005

@@ -25,6 +25,7 @@
 
 #include "PluginInterface.h"
 #include "TrafficSampler.h"
+#include "DisplayOptions.h"
 
 namespace
 {
@@ -136,7 +137,7 @@ bool ReadV6(const MIB_TCP6ROW& row, EstatsData& data)
         nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&data), 0, sizeof(data)) == NO_ERROR;
 }
 
-std::wstring FormatBytes(std::uint64_t bytes)
+std::wstring FormatBytes(std::uint64_t bytes, int gb_decimals = 2)
 {
     // A one-letter unit keeps the daily totals narrow enough for a taskbar column.
     static constexpr const wchar_t* units[] = {L"B", L"K", L"M", L"G", L"T"};
@@ -151,7 +152,7 @@ std::wstring FormatBytes(std::uint64_t bytes)
     if (unit == 0)
         output << static_cast<std::uint64_t>(value);
     else
-        output << std::fixed << std::setprecision(value < 10.0 ? 1 : 0) << value;
+        output << std::fixed << std::setprecision(unit == 3 ? gb_decimals : (value < 10.0 ? 1 : 0)) << value;
     output << units[unit];
     return output.str();
 }
@@ -159,13 +160,18 @@ std::wstring FormatBytes(std::uint64_t bytes)
 class TrafficItem final : public IPluginItem
 {
 public:
-    explicit TrafficItem(TrafficSampler& sampler) : m_sampler(sampler) {}
+    TrafficItem(TrafficSampler& sampler, const DisplayOptions& options) : m_sampler(sampler), m_options(options) {}
 
     const wchar_t* GetItemName() const override { return L"IPv4/IPv6 daily traffic"; }
     const wchar_t* GetItemId() const override { return L"IPv6Traffic"; }
     const wchar_t* GetItemLableText() const override { return L""; }
-    const wchar_t* GetItemValueText() const override { return m_value.c_str(); }
-    const wchar_t* GetItemValueSampleText() const override { return L"4 1024G / 6 1024G"; }
+    const wchar_t* GetItemValueText() const override { RefreshText(); return m_value.c_str(); }
+    const wchar_t* GetItemValueSampleText() const override
+    {
+        const auto sample = FormatBytes(1024ULL * 1024 * 1024 * 1024 - 1, m_options.gb_decimals);
+        m_sample = ExpandDisplayFormat(m_options.single, sample, sample);
+        return m_sample.c_str();
+    }
     bool IsCustomDraw() const override { return true; }
     int GetItemWidth() const override { return 105; }
     int IsDoubleLineExclusive() const override { return 1; }
@@ -174,9 +180,18 @@ public:
     {
         SIZE size{};
         HDC dc = static_cast<HDC>(hdc);
-        if (!dc || !GetTextExtentPoint32W(dc, GetItemValueSampleText(),
-                static_cast<int>(wcslen(GetItemValueSampleText())), &size))
+        const auto* sample_text = GetItemValueSampleText();
+        if (!dc || !GetTextExtentPoint32W(dc, sample_text,
+                static_cast<int>(wcslen(sample_text)), &size))
             return 0;
+        const auto sample = FormatBytes(1024ULL * 1024 * 1024 * 1024 - 1, m_options.gb_decimals);
+        for (const auto* format : {&m_options.first, &m_options.second})
+        {
+            const auto row = ExpandDisplayFormat(*format, sample, sample);
+            SIZE row_size{};
+            GetTextExtentPoint32W(dc, row.c_str(), static_cast<int>(row.size()), &row_size);
+            size.cx = std::max(size.cx, row_size.cx);
+        }
         return size.cx + MulDiv(4, GetDeviceCaps(dc, LOGPIXELSX), 96);
     }
 
@@ -197,11 +212,13 @@ public:
         RECT second{rect.left, rect.top + row_height, rect.right, rect.bottom};
         const auto& v4 = m_sampler.IPv4();
         const auto& v6 = m_sampler.IPv6();
-        const std::wstring v4_text = L"4 " + FormatBytes(v4.today_bytes);
-        const std::wstring v6_text = L"6 " + FormatBytes(v6.today_bytes);
+        const auto v4_value = FormatBytes(v4.today_bytes, m_options.gb_decimals);
+        const auto v6_value = FormatBytes(v6.today_bytes, m_options.gb_decimals);
+        const auto v4_text = ExpandDisplayFormat(m_options.first, v4_value, v6_value);
+        const auto v6_text = ExpandDisplayFormat(m_options.second, v4_value, v6_value);
         TEXTMETRICW metrics{};
         const bool two_rows = GetTextMetricsW(dc, &metrics) && height >= 2 * metrics.tmHeight;
-        const auto line = v4_text + L" / " + v6_text;
+        const auto line = ExpandDisplayFormat(m_options.single, v4_value, v6_value);
         // Older hosts may allocate less width than requested. Fit within that
         // rectangle without drawing into neighbouring taskbar items.
         SIZE extent{};
@@ -240,31 +257,30 @@ public:
             DeleteObject(fitted);
     }
 
-    void RefreshText()
+    void RefreshText() const
     {
         const auto& v4 = m_sampler.IPv4();
         const auto& v6 = m_sampler.IPv6();
-        m_value = L"4 " + FormatBytes(v4.today_bytes) + L" / 6 " + FormatBytes(v6.today_bytes);
+        m_value = ExpandDisplayFormat(m_options.single, FormatBytes(v4.today_bytes, m_options.gb_decimals),
+            FormatBytes(v6.today_bytes, m_options.gb_decimals));
     }
 
 private:
     TrafficSampler& m_sampler;
-    std::wstring m_value;
+    const DisplayOptions& m_options;
+    mutable std::wstring m_value;
+    mutable std::wstring m_sample;
 };
 
 class TrafficPlugin final : public ITMPlugin
 {
 public:
-    TrafficPlugin() : m_item(m_sampler) {}
+    TrafficPlugin() : m_item(m_sampler, m_options) {}
 
     IPluginItem* GetItem(int index) override { return index == 0 ? &m_item : nullptr; }
     void DataRequired() override
     {
         m_sampler.Sample();
-        m_item.RefreshText();
-        const auto& v4 = m_sampler.IPv4();
-        const auto& v6 = m_sampler.IPv6();
-        m_tooltip = L"4 " + FormatBytes(v4.today_bytes) + L" | 6 " + FormatBytes(v6.today_bytes) + L" (today, TCP total)";
     }
     const wchar_t* GetInfo(PluginInfoIndex index) override
     {
@@ -279,17 +295,32 @@ public:
         default: return L"";
         }
     }
-    const wchar_t* GetTooltipInfo() override { return m_tooltip.c_str(); }
+    const wchar_t* GetTooltipInfo() override
+    {
+        m_tooltip = L"IPv4 " + FormatBytes(m_sampler.IPv4().today_bytes, m_options.gb_decimals) +
+            L" | IPv6 " + FormatBytes(m_sampler.IPv6().today_bytes, m_options.gb_decimals) + L" (today, TCP total)";
+        return m_tooltip.c_str();
+    }
+    OptionReturn ShowOptionsDialog(void* parent) override
+    {
+        return EditDisplayOptions(parent, m_config_dir, m_options) ? OR_OPTION_CHANGED : OR_OPTION_UNCHANGED;
+    }
     void OnExtenedInfo(ExtendedInfoIndex index, const wchar_t* data) override
     {
         if (index == EI_CONFIG_DIR && data != nullptr)
+        {
             m_sampler.SetConfigDir(data);
+            m_config_dir = data;
+            m_options = LoadDisplayOptions(m_config_dir);
+        }
     }
 
 private:
     TrafficSampler m_sampler;
+    DisplayOptions m_options;
+    std::wstring m_config_dir;
     TrafficItem m_item;
-    std::wstring m_tooltip{L"4 / 6 today's TCP totals"};
+    std::wstring m_tooltip;
 };
 
 TrafficPlugin g_plugin;
